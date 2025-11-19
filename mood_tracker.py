@@ -3,6 +3,8 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import duckdb
 import os
+import requests
+import json
 
 class MoodTrackerCLI:
     def __init__(self, stdscr, db_path="poems.db"):
@@ -15,6 +17,8 @@ class MoodTrackerCLI:
         curses.start_color()
         # White text on blue background
         curses.init_pair(1, curses.COLOR_WHITE, curses.COLOR_BLUE)
+        # Yellow text on blue background for inspirations
+        curses.init_pair(2, curses.COLOR_YELLOW, curses.COLOR_BLUE)
         self.stdscr.bkgd(' ', curses.color_pair(1))
         self.stdscr.clear()
         
@@ -149,8 +153,9 @@ class MoodTrackerCLI:
         self.stdscr.addstr(3, 1, "1. Add mood record", curses.color_pair(1))
         self.stdscr.addstr(4, 1, "2. View mood records", curses.color_pair(1))
         self.stdscr.addstr(5, 1, "3. View mood chart", curses.color_pair(1))
-        self.stdscr.addstr(6, 1, "4. Exit", curses.color_pair(1))
-        self.stdscr.addstr(8, 1, "Please choose an option (1-4): ", curses.color_pair(1))
+        self.stdscr.addstr(6, 1, "4. Inspirations", curses.color_pair(2) | curses.A_BOLD)
+        self.stdscr.addstr(7, 1, "5. Exit", curses.color_pair(1))
+        self.stdscr.addstr(9, 1, "Please choose an option (1-5): ", curses.color_pair(1))
         self.stdscr.refresh()
 
     def add_mood_record(self):
@@ -243,6 +248,121 @@ class MoodTrackerCLI:
         plt.grid(True)
         plt.tight_layout()
         plt.show()
+    
+    def get_random_poem(self):
+        """
+        Fetch a random poem from PoetryDB API with less than 1000 lines.
+        Keeps querying until a suitable poem is found.
+        
+        Returns:
+            dict with 'title', 'author', 'lines' or None if error
+        """
+        max_attempts = 20  # Prevent infinite loops
+        attempts = 0
+        
+        while attempts < max_attempts:
+            try:
+                response = requests.get("https://poetrydb.org/random", timeout=5)
+                response.raise_for_status()
+                poems = response.json()
+                
+                if poems and len(poems) > 0:
+                    poem = poems[0]
+                    linecount = int(poem.get('linecount', 0))
+                    
+                    # Check if poem has less than 1000 lines
+                    if linecount < 1000:
+                        return {
+                            'title': poem.get('title', 'Untitled'),
+                            'author': poem.get('author', 'Unknown'),
+                            'lines': poem.get('lines', [])
+                        }
+                
+                attempts += 1
+            except (requests.RequestException, json.JSONDecodeError, ValueError, KeyError) as e:
+                attempts += 1
+                if attempts >= max_attempts:
+                    return None
+        
+        return None
+    
+    def display_inspiration_poem(self, poem, start_line, separator_length=50):
+        """
+        Display an inspiration poem from the API.
+        
+        Args:
+            poem: dict with 'title', 'author', 'lines'
+            start_line: starting line number for display
+            separator_length: length of separator line
+        """
+        if poem is None:
+            self.stdscr.addstr(start_line, 1, "Unable to fetch poem. Please try again later.", curses.color_pair(1))
+            return start_line + 1
+        
+        # Display a line of separators
+        separator = "-" * separator_length
+        self.stdscr.addstr(start_line, 1, separator, curses.color_pair(1))
+        
+        # Display poem title
+        title_line = start_line + 1
+        self.stdscr.addstr(title_line, 1, f"Poem: {poem['title']}", curses.color_pair(1))
+        
+        # Display author name
+        author_line = start_line + 2
+        self.stdscr.addstr(author_line, 1, f"By: {poem['author']}", curses.color_pair(1))
+        
+        # Empty line for spacing
+        empty_line = start_line + 3
+        self.stdscr.addstr(empty_line, 1, "", curses.color_pair(1))
+        
+        # Display poem lines with character-by-character animation
+        poem_lines = poem.get('lines', [])
+        current_line = start_line + 4
+        max_width = curses.COLS - 2
+        
+        # Loop through poem lines
+        for poem_line in poem_lines:
+            # Do we have enough screen space?
+            if current_line >= curses.LINES - 2:
+                break
+            
+            # Handle line length; truncate if too long
+            display_line = poem_line
+            if len(poem_line) > max_width:
+                display_line = poem_line[:max_width - 3] + "..."
+            
+            # Display line character by character (typewriter effect)
+            x_pos = 1
+            for char in display_line:
+                self.stdscr.addstr(current_line, x_pos, char, curses.color_pair(1))
+                self.stdscr.refresh()
+                curses.napms(50)  # 50ms delay between characters
+                x_pos += 1
+            
+            current_line += 1
+        
+        return current_line
+    
+    def show_inspirations(self):
+        """Display a random inspiration poem from PoetryDB"""
+        self.stdscr.clear()
+        self.stdscr.bkgd(' ', curses.color_pair(1))
+        self.stdscr.addstr(1, 1, "Fetching inspiration...", curses.color_pair(1))
+        self.stdscr.refresh()
+        
+        poem = self.get_random_poem()
+        
+        self.stdscr.clear()
+        self.stdscr.bkgd(' ', curses.color_pair(1))
+        self.stdscr.addstr(1, 1, "Inspirations", curses.A_BOLD | curses.color_pair(1))
+        
+        line_offset = 3
+        last_line = self.display_inspiration_poem(poem, line_offset, separator_length=50)
+        
+        # Add instruction to press any key
+        self.stdscr.addstr(last_line + 1, 1, "Press any key to return to menu...", curses.color_pair(1))
+        self.stdscr.refresh()
+        self.stdscr.getch()
 
     def run(self):
         while True:
@@ -257,11 +377,13 @@ class MoodTrackerCLI:
             elif choice == ord('3'):
                 self.plot_mood_chart()
             elif choice == ord('4'):
+                self.show_inspirations()
+            elif choice == ord('5'):
                 break  # Exit the program
             else:
                 self.stdscr.clear()
                 self.stdscr.bkgd(' ', curses.color_pair(1))
-                self.stdscr.addstr(1, 1, "Invalid choice! Please choose a valid option (1-4).", curses.color_pair(1))
+                self.stdscr.addstr(1, 1, "Invalid choice! Please choose a valid option (1-5).", curses.color_pair(1))
                 self.stdscr.refresh()
                 self.stdscr.getch()
 
